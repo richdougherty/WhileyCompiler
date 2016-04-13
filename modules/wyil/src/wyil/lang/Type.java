@@ -101,7 +101,7 @@ public abstract class Type {
 			return (Type.Reference) r;
 		} else {
 			throw new IllegalArgumentException(
-					"invalid arguments for Type.Reference()");
+					"invalid arguments for Type.Reference(): " + r);
 		}
 	}
 
@@ -535,7 +535,8 @@ public abstract class Type {
 	 * @return
 	 */
 	public static Type intersect(Type t1, Type t2) {
-		return TypeAlgorithms.intersect(t1,t2);
+		Type t = TypeAlgorithms.intersect(t1,t2);
+		return t;
 	}
 
 	public static Reference effectiveReference(Type t) {
@@ -1295,8 +1296,14 @@ public abstract class Type {
 			break;
 		}
 		case K_LIST: {
-			middle = toString(state.children[0], visited, headers, automaton)
-					+ "[]";
+			boolean nonEmpty = (Boolean) state.data;
+			if (nonEmpty) {
+				middle = toString(state.children[0], visited, headers,
+								automaton) + "[]+";
+			} else {
+				middle = toString(state.children[0], visited, headers,
+								automaton) + "[]";
+			}
 			break;
 		}
 		case K_NOMINAL:
@@ -1319,12 +1326,14 @@ public abstract class Type {
 		case K_UNION: {
 			int[] children = state.children;
 			middle = "";
+			if (children.length > 1) { middle += "("; }
 			for (int i = 0; i != children.length; ++i) {
 				if(i != 0 || children.length == 1) {
 					middle += "|";
 				}
 				middle += toBracesString(children[i], visited, headers, automaton);
 			}
+			if (children.length > 1) { middle += ")"; }
 			break;
 		}
 		case K_TUPLE: {
@@ -1518,7 +1527,13 @@ public abstract class Type {
 	 * @return
 	 */
 	public final static Type construct(Automaton automaton) {
-		automaton = normalise(automaton);
+		return construct(automaton, true);
+	}
+
+	public final static Type construct(Automaton automaton, boolean normaliseFirst) {
+		if (normaliseFirst) {
+			automaton = normalise(automaton);
+		}		
 		// second, construc the appropriate face
 		State root = automaton.states[0];
 		Type type;

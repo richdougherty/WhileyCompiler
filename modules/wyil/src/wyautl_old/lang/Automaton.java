@@ -26,6 +26,7 @@
 package wyautl_old.lang;
 
 import java.util.*;
+import wyil.lang.Type;
 
 /**
  * <p>
@@ -125,6 +126,55 @@ public final class Automaton {
 		return false;
 	}
 
+	private final static String kindToString(int kind) {
+		switch (kind) {
+		case -1:
+			return "&";
+		case Type.K_VOID:
+			return "void";
+		case Type.K_ANY:
+			return "any";
+		case Type.K_NULL:
+			return "null";
+		case Type.K_BOOL:
+			return "bool";
+		case Type.K_BYTE:
+			return "byte";
+		case Type.K_CHAR:
+			return "char";
+		case Type.K_INT:
+			return "int";
+		case Type.K_RATIONAL:
+			return "real";
+		case Type.K_STRING:
+			return "string";
+		case Type.K_SET:
+			return "set";
+		case Type.K_LIST:
+			return "list";
+		case Type.K_NOMINAL:
+			return "nominal";
+		case Type.K_REFERENCE:
+			return "reference";
+		case Type.K_NEGATION:
+			return "negation";
+		case Type.K_MAP:
+			return "map";
+		case Type.K_UNION:
+			return "union";
+		case Type.K_TUPLE:
+			return "tuple";
+		case Type.K_RECORD:
+			return "record";
+		case Type.K_METHOD:
+			return "method";
+		case Type.K_FUNCTION:
+			return "function";
+		default:
+			throw new IllegalArgumentException("Invalid kind: " + kind +"");
+		}
+	}
+
 	public String toString() {
 		String r = "";
 		for(int i=0;i!=states.length;++i) {
@@ -136,6 +186,8 @@ public final class Automaton {
 			r = r + "#";
 			r = r + i;
 			r = r + "(";
+			r = r + kindToString(kind);
+			r = r + ":";
 			r = r + kind;
 
 			if(state.data != null) {
@@ -261,6 +313,36 @@ public final class Automaton {
 			} else {
 				return r;
 			}
+		}
+
+		public String toString() {
+			StringBuilder sb = new StringBuilder();
+			sb.append("(");
+			sb.append(kind);
+
+			if(data != null) {
+				sb.append("," + data);
+			}
+			sb.append(")");
+			if(deterministic) {
+				sb.append("[");
+			} else {
+				sb.append("{");
+			}
+			boolean firstTime=true;
+			for(int c : children) {
+				if(!firstTime) {
+					sb.append(",");
+				}
+				firstTime=false;
+				sb.append(c);
+			}
+			if(deterministic) {
+				sb.append("]");
+			} else {
+				sb.append("}");
+			}
+			return sb.toString();
 		}
 	}
 

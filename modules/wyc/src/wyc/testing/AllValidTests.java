@@ -77,7 +77,6 @@ public class AllValidTests {
 	public final static Map<String, String> IGNORED = new HashMap<String, String>();
 
 	static {
-		IGNORED.put("Coercion_Valid_8", "#406");
 		IGNORED.put("Complex_Valid_3", "Issue ???");
 		IGNORED.put("ConstrainedIntersection_Valid_1", "unknown");
 		IGNORED.put("ConstrainedNegation_Valid_1", "#342");
@@ -168,7 +167,7 @@ public class AllValidTests {
 		Pair<Integer,String> p = TestUtils.compile(
 				"-wd", WHILEY_SRC_DIR,      // location of source directory
 				"-wp", WYRT_PATH,           // add wyrt to whileypath
-				//"-verify",                  // enable verification
+				// "-verify",                  // enable verification
 				whileyFilename);                      // name of test to compile
 
 		int r = p.first();

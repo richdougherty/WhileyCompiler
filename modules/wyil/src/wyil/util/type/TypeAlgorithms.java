@@ -69,6 +69,10 @@ import wyil.lang.Type;
  */
 public final class TypeAlgorithms {
 
+	private static void log(String message) {
+		//System.err.println(message);
+	}
+
 	/**
 	 * The data comparator is used in the type canonicalisation process. It is
 	 * used to compare the supplementary data of states in automata
@@ -225,15 +229,113 @@ public final class TypeAlgorithms {
 	 * </p>
 	 *
 	 */
-	public static void simplify(Automaton automaton) {
-		boolean changed = true;
-		while(changed) {
-			changed = false;
-			// NOTE: the following is commented out because it's broken.
-			// changed |= simplifyContractives(automaton);
-			for(int i=0;i!=automaton.size();++i) {
-				changed |= simplify(i,automaton);
+	private static int simplifyCallCounter = 0;
+
+	private static enum Inhabitation {
+		UNLABELED, NONE, SOME, ALL
+	}
+
+	private static Inhabitation getStateInhabitation(int index, Automaton automaton, BitSet inhabitationFlags) {
+		Automaton.State state = automaton.states[index];
+		switch (state.kind) {
+		case Type.K_VOID:
+			return Inhabitation.NONE;
+		case Type.K_ANY:
+			return Inhabitation.ALL;
+		case Type.K_NULL:
+		case Type.K_BOOL:
+		case Type.K_BYTE:
+		case Type.K_CHAR:
+		case Type.K_INT:
+		case Type.K_RATIONAL:
+		case Type.K_STRING:
+		case Type.K_FUNCTION:
+		case Type.K_NOMINAL:
+			return Inhabitation.SOME;
+		case Type.K_NEGATION:
+		case Type.K_UNION :
+		case Type.K_LIST:
+		case Type.K_REFERENCE:
+		case Type.K_SET:
+		case Type.K_RECORD:
+		case Type.K_TUPLE:
+		case Type.K_METHOD:
+			if (state.kind == Type.K_LIST) {
+				log("      Raw flag value for list at index #" + index + " is " + inhabitationFlags.get(index) + " from " + inhabitationFlags);
 			}
+			if (inhabitationFlags.get(index)) {
+				return Inhabitation.SOME;
+			} else {
+				return Inhabitation.UNLABELED;
+			}
+		default:
+			throw new IllegalArgumentException("Unknown kind: " + state.kind);
+		}
+	}
+
+	private static boolean setStateInhabitation(int index, Automaton automaton, BitSet inhabitationFlags, Inhabitation newValue) {
+		Inhabitation existingValue = getStateInhabitation(index, automaton, inhabitationFlags);
+		if (newValue == existingValue) {
+			return false;
+		}
+		if (newValue == Inhabitation.NONE) {
+			automaton.states[index] = new Automaton.State(Type.K_VOID);
+		} else if (newValue == Inhabitation.ALL) {
+			automaton.states[index] = new Automaton.State(Type.K_ANY);
+		} else if (newValue == Inhabitation.SOME || newValue == Inhabitation.UNLABELED) {
+			int existingKind = automaton.states[index].kind;
+			switch (existingKind) {
+			case Type.K_NEGATION:
+			case Type.K_UNION :
+			case Type.K_LIST:
+			case Type.K_REFERENCE:
+			case Type.K_SET:
+			case Type.K_RECORD:
+			case Type.K_TUPLE:
+			case Type.K_FUNCTION:
+			case Type.K_METHOD:
+				inhabitationFlags.set(index, newValue == Inhabitation.SOME);
+				break;
+			default:
+				throw new IllegalArgumentException("Cannot label state with kind " + existingKind + " with inhabitation label " + newValue);
+			}
+		} else {
+			throw new IllegalArgumentException("Unknown inhabitation label " + newValue);
+		}
+		return true;
+	}
+
+	public static void simplify(Automaton automaton) {
+		int callId = simplifyCallCounter++;
+		BitSet inhabitationFlags = new BitSet(automaton.size());
+		boolean changed = true;
+		boolean markedUninhabitedStates = false;
+
+		simplifyInner(automaton, inhabitationFlags, callId);
+
+		boolean labelingChanged = false;
+		for(int i=0;i!=automaton.size();++i) {
+			if (getStateInhabitation(i, automaton, inhabitationFlags) == Inhabitation.UNLABELED) {
+				log("    marking unlabeled state " + i + " as uninhabited");
+				setStateInhabitation(i, automaton, inhabitationFlags, Inhabitation.NONE);
+				labelingChanged = true;
+			}
+		}
+
+		if (labelingChanged) {
+			simplifyInner(automaton, inhabitationFlags, callId);
+		}
+	}
+
+	private static void simplifyInner(Automaton automaton, BitSet inhabitationFlags, int callId) {
+		boolean loopAgain = true;
+		while (loopAgain) {
+			loopAgain = false;
+			log("Start pass in simplify #"+callId+": " + automaton + ", " + inhabitationFlags);
+			for(int i=0;i!=automaton.size();++i) {
+				loopAgain |= simplify(i,automaton, inhabitationFlags);
+			}
+			log("End pass in simplify #"+callId+":   " + automaton + ", " + inhabitationFlags);
 		}
 	}
 
@@ -252,16 +354,35 @@ public final class TypeAlgorithms {
 		return changed;
 	}
 
-	private static boolean simplify(int index, Automaton automaton) {
+	private static boolean simplify(int index, Automaton automaton, BitSet inhabitationFlags) {
 		Automaton.State state = automaton.states[index];
-		boolean changed=false;
 		switch (state.kind) {
+		case Type.K_VOID:
+		case Type.K_ANY:
+		case Type.K_NULL:
+		case Type.K_BOOL:
+		case Type.K_BYTE:
+		case Type.K_CHAR:
+		case Type.K_INT:
+		case Type.K_RATIONAL:
+		case Type.K_STRING:
+		case Type.K_NOMINAL:
+		case Type.K_FUNCTION:
+			return false;
 		case Type.K_NEGATION:
-			changed = simplifyNegation(index, state, automaton);
-			break;
+			return simplifyNegation(index, state, automaton, inhabitationFlags);
 		case Type.K_UNION :
-			changed = simplifyUnion(index, state, automaton);
-			break;
+			return simplifyUnion(index, state, automaton, inhabitationFlags);
+		case Type.K_REFERENCE: {
+			Inhabitation childInhabitation = getStateInhabitation(state.children[0], automaton, inhabitationFlags);
+			if (childInhabitation == Inhabitation.ALL || childInhabitation == Inhabitation.SOME) {
+				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
+			} else if (childInhabitation == Inhabitation.NONE) {
+				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
+			} else {
+				return false;
+			}
+		}
 		case Type.K_LIST:
 		case Type.K_SET:
 			// for list and set types, we want to simplify the following cases:
@@ -269,46 +390,76 @@ public final class TypeAlgorithms {
 			// {void+} => void
 			boolean nonEmpty = (Boolean) state.data;
 			if(!nonEmpty) {
-				// type of form [T], so ignore
-				break;
+				// type of form [T], so no further simplication needed
+				// Inhabited by the empty list and set
+				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 			}
-			// type of form [T+] so simplify like other compounds.
+			// type of form [T+] so fall through to simplify like other compounds.
 		case Type.K_RECORD:
 		case Type.K_TUPLE:
-		case Type.K_FUNCTION:
 		case Type.K_METHOD:
-			changed = simplifyCompound(index, state, automaton);
-			break;
+			return simplifyCompound(index, state, automaton, inhabitationFlags);
+		default:
+			throw new IllegalArgumentException("Can't simplify state with kind: " + state.kind);
 		}
-		return changed;
 	}
 
-	private static boolean simplifyNegation(int index, Automaton.State state, Automaton automaton) {
+	private static boolean simplifyNegation(int index, Automaton.State state, Automaton automaton, BitSet inhabitationFlags) {
+		log("  Simplifying negation at #"+index);
+
+		// Rewrite !!X => X
 		Automaton.State child = automaton.states[state.children[0]];
 		if(child.kind == Type.K_NEGATION) {
 			// bypass node
-			Automaton.State childchild = automaton.states[child.children[0]];
+			int childchildIndex = child.children[0];
+			Inhabitation childchildInhabitation = getStateInhabitation(childchildIndex, automaton, inhabitationFlags);
+			Automaton.State childchild = automaton.states[childchildIndex];
+			log("    Replacing double negation with state at #"+childchildIndex+" of kind " + childchild.kind + " and inhabitation " + childchildInhabitation);
 			automaton.states[index] = new Automaton.State(childchild);
+			setStateInhabitation(index, automaton, inhabitationFlags, childchildInhabitation);
 			return true;
 		}
-		return false;
+
+		// Set inhabitation label based on child's label
+		Inhabitation childInhabitation = getStateInhabitation(state.children[0], automaton, inhabitationFlags);
+		Inhabitation inhabitation;
+		if (childInhabitation == Inhabitation.ALL) {
+			inhabitation = Inhabitation.NONE;
+		} else if (childInhabitation == Inhabitation.NONE) {
+			inhabitation = Inhabitation.ALL;
+		} else {
+			// Use child's value if UNLABELED or SOME
+			inhabitation = childInhabitation;
+		}
+		return setStateInhabitation(index, automaton, inhabitationFlags, inhabitation);
 	}
 
-	private static boolean simplifyCompound(int index, Automaton.State state, Automaton automaton) {
+	private static boolean simplifyCompound(int index, Automaton.State state, Automaton automaton, BitSet inhabitationFlags) {
+		log("  Simplifying compound at #"+index);
 		int kind = state.kind;
 		int[] children = state.children;
-		boolean isOpenRecord = false;
-		if(kind == Type.K_RECORD) {
-			Type.Record.State data = (Type.Record.State) state.data;
-			isOpenRecord = data.isOpen;
+
+		int numChildrenToCheck = children.length;
+		if (state.kind == Type.K_FUNCTION) {
+		  // Only check function parameters for now
+		  // TODO: Work out how to handle function return types properly
+			numChildrenToCheck = (Integer) state.data;
 		}
 
-		for(int i=0;i<children.length;++i) {			
+		boolean allChildrenInhabited = true;
+		for(int i=0;i<numChildrenToCheck;++i) {			
 			Automaton.State child = automaton.states[children[i]];
-			if(child.kind == Type.K_VOID) {
-				automaton.states[index] = new Automaton.State(Type.K_VOID);
-				return true;
-			}
+			Inhabitation childInhabitation = getStateInhabitation(children[i], automaton, inhabitationFlags);
+			if (childInhabitation == Inhabitation.NONE) {
+				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
+			} else if (childInhabitation == Inhabitation.UNLABELED) {
+				allChildrenInhabited = false;
+			} // else ALL or SOME: leave allChildrenInhabited as it is
+		}
+
+		if (allChildrenInhabited) {
+			log("    All children of compound are inhabited: marking");
+			return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 		}
 
 		return false;
@@ -333,8 +484,9 @@ public final class TypeAlgorithms {
 	 * @return
 	 */
 	private static boolean simplifyUnion(int index, Automaton.State state,
-			Automaton automaton) {
-		return simplifyUnion_1(index, state, automaton)
+			Automaton automaton, BitSet inhabitationFlags) {
+		log("  Simplifying union at #"+index);
+		return simplifyUnion_1(index, state, automaton, inhabitationFlags)
 				|| simplifyUnion_2(index, state, automaton);
 	}
 
@@ -356,42 +508,59 @@ public final class TypeAlgorithms {
 	 * @return
 	 */
 	private static boolean simplifyUnion_1(int index, Automaton.State state,
-			Automaton automaton) {
+			Automaton automaton, BitSet inhabitationFlags) {
 		int[] children = state.children;
+
 		boolean changed = false;
+
+		boolean anyChildrenInhabited = false;
 		for (int i = 0; i < children.length; ++i) {
 			int iChild = children[i];
 			if (iChild == index) {
 				// contractive case
+				log("    Simplifying union child self-reference: removing child");
 				state.children = removeIndex(i, children);
 				changed = true;
 			} else {
 				Automaton.State child = automaton.states[iChild];
-				switch (child.kind) {
-					case Type.K_ANY :
-						automaton.states[index] = new Automaton.State(Type.K_ANY);
-						return true;
-					case Type.K_VOID : {
+				if (child.kind == Type.K_UNION) {
+					// TODO: Optimise by inserting in-place?
+					log("    Simplifying union child of union: flattening");
+					flattenChildren(index, state, automaton);
+					return true;
+				}
+				switch (getStateInhabitation(iChild, automaton, inhabitationFlags)) {
+					case ALL:
+						log("    Simplifying union child of type any: union becomes any");
+						return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.ALL);
+					case NONE:
+						log("    Simplifying union child of type void: removing child");
 						children = removeIndex(i, children);
 						state.children = children;
 						changed = true;
-						break;
-					}
-					case Type.K_UNION :
-						return flattenChildren(index, state, automaton);
+						continue;
+					case SOME:
+						log("    Simplifying union child with some inhabitants: setting flag");
+						anyChildrenInhabited = true;
 				}
 			}
 		}
 		if (children.length == 0) {
 			// this can happen in the case of a union which has only itself as a
 			// child.
+			log("    Simplifying union with no children: union becomes void");
 			automaton.states[index] = new Automaton.State(Type.K_VOID);
 			changed = true;
 		} else if (children.length == 1) {
 			// bypass this node altogether
+			log("    Simplifying union with one child: removing union");
 			int child = children[0];
 			automaton.states[index] = new Automaton.State(automaton.states[child]);
 			changed = true;
+		} else if (anyChildrenInhabited) {
+			log("    Simplifying union with at least one inhabited child: marking inhabited");
+			// this union has inhabition of SOME because at least one child is inhabited
+			changed |= setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 		}
 
 		return changed;
@@ -428,6 +597,7 @@ public final class TypeAlgorithms {
 				}
 			}
 			if (subsumed) {
+				log("    Simplifying union with child that's subtype of another child: removing subtype");
 				children = removeIndex(i--, children);
 				state.children = children;
 				changed = true;
@@ -472,6 +642,11 @@ public final class TypeAlgorithms {
 			return false;
 		}
 
+		@Override
+		public String toString() {
+			return "(" + (fromSign ? '+' : '-') + fromIndex + "&" + (toSign ? '+' : '-') + fromIndex + ")";
+		}
+
 		public int hashCode() {
 			return fromIndex + toIndex;
 		}
@@ -504,14 +679,55 @@ public final class TypeAlgorithms {
 	public static Type intersect(Type t1, Type t2) {
 		Automaton a1 = Type.destruct(t1);
 		Automaton a2 = Type.destruct(t2);
-		return Type.construct(intersect(true,a1,true,a2));
+		log("----- TypeAlgorithms.intersect called -----\n  "+t1+" ("+a1+"),\n  "+t2+" ("+a2+")");
+		Automaton a = intersect(true,a1,true,a2);
+		log("----- TypeAlgorithms.intersect finished -----");
+		log("  result: "+Type.construct(a,false)+" ("+a+")");
+		simplify(a);
+		log("  simplified:    "+Type.construct(a,false)+" ("+a+")");
+		a = Automata.extract(a, 0);
+		log("  extracted:     "+Type.construct(a,false)+" ("+a+")");
+		// TODO: minimise in place to avoid allocating data unless necessary
+		a = Automata.minimise(a);
+		log("  minimised:     "+Type.construct(a,false)+" ("+a+")");
+		Automata.canonicalise(a, TypeAlgorithms.DATA_COMPARATOR);
+		log("  canonicalised: "+Type.construct(a,false)+" ("+a+")");
+		Type t = Type.construct(a, true);
+		log("  final type: "+t);
+		return t;
 	}
+
+	private static int callTraceCounter = 0;
 
 	private static Automaton intersect(boolean fromSign, Automaton from, boolean toSign, Automaton to) {
 		HashMap<IntersectionPoint,Integer> allocations = new HashMap();
 		ArrayList<Automaton.State> nstates = new ArrayList();
+		callTraceCounter = 0;
 		intersect(0,fromSign,from,0,toSign,to,allocations,nstates);
 		return new Automaton(nstates.toArray(new Automaton.State[nstates.size()]));
+	}
+
+	private static String stateToString(Automaton a, int index, boolean sign) {
+		Automaton.State state = a.states[index];
+		int kind = state.kind;
+		int invertedKind = invert(kind, sign);
+		StringBuilder sb = new StringBuilder();
+		sb.append('#');
+		sb.append(index);
+		sb.append('(');
+		if (sign) { sb.append('+'); } else { sb.append('-'); }
+		sb.append(kindToString(invertedKind));
+		sb.append(':');
+		sb.append(invertedKind);
+		sb.append(')');
+		if (kind != invertedKind) {
+			sb.append(" (inverted from ");
+			sb.append(kindToString(kind));
+			sb.append(':');
+			sb.append(kind);
+		}
+		sb.append(')');
+		return sb.toString();
 	}
 
 	private static int intersect(int fromIndex, boolean fromSign,
@@ -519,26 +735,50 @@ public final class TypeAlgorithms {
 			HashMap<IntersectionPoint, Integer> allocations,
 			ArrayList<Automaton.State> states) {
 
+		int callId = callTraceCounter++;
+		{
+			log("TypeAlgorithms.intersect #"+callId+" called");
+			log("  from: " + stateToString(from, fromIndex, fromSign));
+			log("  to: " + stateToString(to, toIndex, toSign));
+	  }
+
 		// first, check whether we have determined this state already
 		IntersectionPoint ip = new IntersectionPoint(fromIndex,fromSign,toIndex,toSign);
 		Integer allocation = allocations.get(ip);
-		if(allocation != null) { return allocation;}
+		if(allocation != null) {
+			log("    already allocated state " + allocation);
+			return allocation;
+		}
 
 		// looks like we haven't, so proceed to determine the new state.
 		int myIndex = states.size();
 		allocations.put(ip,myIndex);
+		log("    may allocate state " + myIndex);
 
 		Automaton.State fromState = from.states[fromIndex];
 		Automaton.State toState = to.states[toIndex];
 
 		// now, dispatch for the appropriate case.
+		int ret;
 		if(fromState.kind == toState.kind) {
-			return intersectSameKind(fromIndex, fromSign, from, toIndex,
+			log("    same kind");
+			ret = intersectSameKind(fromIndex, fromSign, from, toIndex,
 					toSign, to, allocations, states);
 		} else {
-			return intersectDifferentKind(fromIndex, fromSign, from, toIndex,
+			log("    different kind");
+			ret = intersectDifferentKind(fromIndex, fromSign, from, toIndex,
 					toSign, to, allocations, states);
 		}
+
+		{
+			log("TypeAlgorithms.intersect #"+callId+" returning");
+			log("  from: " + stateToString(from, fromIndex, fromSign));
+			log("  to: " + stateToString(to, toIndex, toSign));
+	  }
+		log("    states are: "+states);
+		log("    returning state: "+ret);
+		log("    allocations: "+allocations);
+		return ret;	
 	}
 
 	/**
@@ -871,8 +1111,10 @@ public final class TypeAlgorithms {
 			HashMap<IntersectionPoint, Integer> allocations,
 			ArrayList<Automaton.State> states){
 		if (!fromSign && !toSign) {
+			log("    intersectUnionsNegNeg");
 			return intersectUnionsNegNeg(fromIndex, from, toIndex, to,allocations,states);
 		} else {
+			log("    intersectUnionsPosNeg");
 			return intersectUnionsPosNeg(fromIndex, fromSign, from, toIndex, toSign, to, allocations,states);
 		}
 	}
@@ -891,6 +1133,7 @@ public final class TypeAlgorithms {
 		int[] newChildren = new int[fromChildren.length];
 		for (int i = 0; i != fromChildren.length; ++i) {
 			int fromChild = fromChildren[i];
+			log("    intersectUnionsPosNeg: intersecting children at " + i);
 			newChildren[i] = intersect(fromChild, fromSign, from, toIndex,
 					toSign, to, allocations, states);
 		}
@@ -970,6 +1213,8 @@ public final class TypeAlgorithms {
 			myData = !fromNonEmpty | toNonEmpty;
 		}
 
+		log("    intersectSetsOrLists: fromNonEmpty: "+fromNonEmpty+", toNonEmpty: " + toNonEmpty + ", myData: " + myData);
+
 		return intersectCompounds(fromIndex,fromSign,from,toIndex,toSign,to,myData,allocations,states);
 	}
 
@@ -984,16 +1229,20 @@ public final class TypeAlgorithms {
 			ArrayList<Automaton.State> states) {
 		if (fromSign == toSign) {
 			if (fromSign) {
+				log("    intersectCompoundsPosPos");
 				return intersectCompoundsPosPos(fromIndex, from, toIndex, to,
 						myData,allocations, states);
 			} else {
+				log("    intersectCompoundsNegNeg");
 				return intersectCompoundsNegNeg(fromIndex, from, toIndex, to,
 						allocations, states);
 			}
 		} else if (fromSign) {
+			log("    intersectCompoundsPosNeg");
 			return intersectCompoundsPosNeg(fromIndex, from, toIndex, to,
 					myData,allocations, states);
 		} else {
+			log("    intersectCompoundsPosNeg");
 			return intersectCompoundsPosNeg(toIndex, to, fromIndex, from,
 					myData,allocations, states);
 		}
@@ -1010,9 +1259,11 @@ public final class TypeAlgorithms {
 		Automaton.State fromState = from.states[fromIndex];
 		Automaton.State toState = to.states[toIndex];
 
+		log("    contiguousZipIntersection for children using same sign");
 		int[] myChildren = contiguousZipIntersection(fromState.children, from,
 				toState.children, to, allocations, states);
 
+		log("    combining children with same compound type: " + kindToString(fromState.kind));
 		Automaton.State myState = new Automaton.State(fromState.kind, myData,
 				true, myChildren);
 
@@ -1031,9 +1282,11 @@ public final class TypeAlgorithms {
 		Automaton.State fromState = from.states[fromIndex];
 		Automaton.State toState = to.states[toIndex];
 
+		log("    contiguousDistributeIntersection for children using +- signs");
 		int[] myChildren = contiguousDistributeIntersection(fromState, true, from,
 				toState, false, to, myData, allocations, states);
 
+		log("    combining children with union");
 		Automaton.State myState = new Automaton.State(Type.K_UNION, null,
 				false, myChildren);
 
@@ -1049,6 +1302,7 @@ public final class TypeAlgorithms {
 		int myIndex = states.size();
 		states.add(null); // reserve space for me
 
+		log("    negation of union of compounds");
 		// e.g. ![int] & ![real] => !([int]|[real])
 		int fromChild = states.size();
 		Automata.extractOnto(fromIndex,from,states);
@@ -1676,6 +1930,7 @@ public final class TypeAlgorithms {
 		for(int i=0;i!=fromChildrenLength;++i) {
 			int[] myChildChildren = new int[fromChildren.length];
 			System.arraycopy(tmpChildren, 0, myChildChildren, 0, fromChildrenLength);
+			log("    contiguousDistributeIntersection: intersecting children at " + i);
 			myChildChildren[i] = intersect(fromChildren[i], fromSign, from, toChildren[i],
 					toSign, to, allocations, states);
 			myChildren[i] = states.size();
@@ -1795,6 +2050,55 @@ public final class TypeAlgorithms {
 	 * helpful to think of it as one.
 	 */
 	private static final int K_INTERSECTION = -1;
+
+	public final static String kindToString(int kind) {
+		switch (kind) {
+		case K_INTERSECTION:
+			return "intersection";
+		case Type.K_VOID:
+			return "void";
+		case Type.K_ANY:
+			return "any";
+		case Type.K_NULL:
+			return "null";
+		case Type.K_BOOL:
+			return "bool";
+		case Type.K_BYTE:
+			return "byte";
+		case Type.K_CHAR:
+			return "char";
+		case Type.K_INT:
+			return "int";
+		case Type.K_RATIONAL:
+			return "real";
+		case Type.K_STRING:
+			return "string";
+		case Type.K_SET:
+			return "set";
+		case Type.K_LIST:
+			return "list";
+		case Type.K_NOMINAL:
+			return "nominal";
+		case Type.K_REFERENCE:
+			return "reference";
+		case Type.K_NEGATION:
+			return "negation";
+		case Type.K_MAP:
+			return "map";
+		case Type.K_UNION:
+			return "union";
+		case Type.K_TUPLE:
+			return "tuple";
+		case Type.K_RECORD:
+			return "record";
+		case Type.K_METHOD:
+			return "method";
+		case Type.K_FUNCTION:
+			return "function";
+		default:
+			throw new IllegalArgumentException("Invalid type encountered (kind: " + kind +")");
+		}
+	}
 
 	private static int[] removeIndex(int index, int[] children) {
 		int[] nchildren = new int[children.length - 1];
