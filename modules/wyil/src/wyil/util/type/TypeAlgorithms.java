@@ -231,13 +231,49 @@ public final class TypeAlgorithms {
 	 */
 	private static int simplifyCallCounter = 0;
 
+	/**
+	 * Type inhabitation labels used by the simplification algorithm.
+	 */
 	private static enum Inhabitation {
-		UNLABELED, NONE, SOME, ALL
+		/**
+		 * Indicates that the simplification algorithm has not yet labeled a state
+		 * with a value.
+		 */
+		UNLABELED,
+		/**
+		 * Type is uninhabited. Equivalent to void.
+		 */
+		NONE,
+		/**
+		 * May have some values inhabiting the type. Since we don't precisely
+		 * track inhabitation, a type that has this label does not necessarily
+		 * have any values, but we may be unable to prove it is uninhabited so we
+		 * may choose to assume that it is inhabited to be safe.
+		 */
+		SOME,
+		/**
+		 * Type is inhabited by all values. Equivalent to any.
+		 */
+		ALL
 	}
 
+	/**
+	 * Get the inhabitation of a state during simplification. Some states have a
+	 * fixed, known inhabitation. Others are either UNLABELED or SOME, depending
+	 * on the value of the corresponding bit in the set of flags.
+	 *
+	 * @param index
+	 *            --- index of state being worked on.
+	 * @param automaton
+	 *            --- automaton containing state being worked on.
+	 * @param inhabitationFlags
+	 *            --- flags tracking inhabitation for some of the states
+	 * @return The inhabitation of the state.
+	 */
 	private static Inhabitation getStateInhabitation(int index, Automaton automaton, BitSet inhabitationFlags) {
 		Automaton.State state = automaton.states[index];
 		switch (state.kind) {
+		// Some states have known, fixed inhabitation.
 		case Type.K_VOID:
 			return Inhabitation.NONE;
 		case Type.K_ANY:
@@ -252,6 +288,7 @@ public final class TypeAlgorithms {
 		case Type.K_FUNCTION:
 		case Type.K_NOMINAL:
 			return Inhabitation.SOME;
+		// Other states have their inhabitation labels stored as a flag.
 		case Type.K_NEGATION:
 		case Type.K_UNION :
 		case Type.K_LIST:
@@ -273,6 +310,31 @@ public final class TypeAlgorithms {
 		}
 	}
 
+	/**
+	 * Set the inhabitation of a state during simplification. This method might
+	 * do several things:
+	 *
+	 * 1. If the inhabitation is set to its existing value, then nothing happens
+	 *    and false is returned.
+	 * 2. If the inhabitation is set to NONE or ALL then the state's kind will be
+	 *    changed to K_VOID or K_ANY and true is returned.
+	 * 3. If the inhabitation is set to SOME or UNLABELED, and the state's kind
+	 *    supports it, then a flag will be set or clared in the inhabitationFlags
+	 *    parameter. True will be returned.
+	 * 4. If none of these actions are possible then a state is being set to
+	 *    an unsupported inhabitation label (e.g. K_INT set to K_UNLABELED) and
+	 *    an IllegalArgumentExceptionw will be thrown.
+	 *
+	 * @param index
+	 *            --- index of state being worked on.
+	 * @param automaton
+	 *            --- automaton containing state being worked on.
+	 * @param inhabitationFlags
+	 *            --- flags tracking inhabitation for some of the states
+	 * @param newValue
+	 *            --- the new inhabitation value to set the state to
+	 * @return Whether or not the value was changed.
+	 */
 	private static boolean setStateInhabitation(int index, Automaton automaton, BitSet inhabitationFlags, Inhabitation newValue) {
 		Inhabitation existingValue = getStateInhabitation(index, automaton, inhabitationFlags);
 		if (newValue == existingValue) {
@@ -305,14 +367,74 @@ public final class TypeAlgorithms {
 		return true;
 	}
 
+	/**
+	 * Analyse an automaton and try to produce a version that is simpler but
+	 * still equivalent.
+	 *
+	 * @param automaton
+	 *            --- automaton to simplify.
+	 */
 	public static void simplify(Automaton automaton) {
+		// FIXME XXXXXXX remove this
 		int callId = simplifyCallCounter++;
-		BitSet inhabitationFlags = new BitSet(automaton.size());
-		boolean changed = true;
-		boolean markedUninhabitedStates = false;
 
+		// Use a BitSet to track the inhabitation label of some of the states in
+		// the automaton. A bit is available for each state but it is ignored for
+		// states whose kind has an implicit inhabitation label, e.g. K_VOID has
+		// a label of NONE, K_ANY has a label of ALL, K_INT has a label of SOME,
+		// etc, but K_RECORD needs a bit to track whether it is UNLABELED or has
+		// a label of SOME.
+		//
+		// A clear bit indicates a state is UNLABELED, a set bit indicates it
+		// has SOME inhabitants. This bit has no meaning for states that already
+		// have implicit inhabitation information.
+		BitSet inhabitationFlags = new BitSet(automaton.size());
+
+		// Perform an initial simplification on the automaton.
 		simplifyInner(automaton, inhabitationFlags, callId);
 
+		// Now that simplification has occurred once, all inhabited states should
+		// have a label. Anything unlabeled can be considered uninhabited.
+		boolean labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
+
+		// If the labeling has changed then attempt an additional simplification.
+		if (labelingChanged) {
+			simplifyInner(automaton, inhabitationFlags, callId);
+		}
+	}
+
+	/**
+	 * Simplifies each state in an automaton until a fixpoint is reached.
+	 *
+	 * @param automaton
+	 *            --- automaton being simplified.
+	 * @param inhabitationFlags
+	 *            --- flags tracking inhabitation for some of the states
+	 */
+	private static void simplifyInner(Automaton automaton, BitSet inhabitationFlags, int callId) {
+		boolean loopAgain = true;
+		while (loopAgain) {
+			loopAgain = false;
+			log("Start pass in simplify #"+callId+": " + automaton + ", " + inhabitationFlags);
+			for(int i=0;i!=automaton.size();++i) {
+				loopAgain |= simplifyState(i,automaton, inhabitationFlags);
+			}
+			log("End pass in simplify #"+callId+":   " + automaton + ", " + inhabitationFlags);
+		}
+	}
+
+	/**
+	 * This method is called after an initial simplification pass. Any states
+	 * that have an UNLABELED inhabitation must not be inhabited, so can be set
+	 * to NONE.
+	 *
+	 * @param automaton
+	 *            --- automaton being simplified.
+	 * @param inhabitationFlags
+	 *            --- flags tracking inhabitation for some of the states
+	 * @return True if the labels were changed by this method, false otherwise.
+	 */
+	private static boolean markUnlabeledAsUninhabited(Automaton automaton, BitSet inhabitationFlags) {
 		boolean labelingChanged = false;
 		for(int i=0;i!=automaton.size();++i) {
 			if (getStateInhabitation(i, automaton, inhabitationFlags) == Inhabitation.UNLABELED) {
@@ -321,24 +443,10 @@ public final class TypeAlgorithms {
 				labelingChanged = true;
 			}
 		}
-
-		if (labelingChanged) {
-			simplifyInner(automaton, inhabitationFlags, callId);
-		}
+		return labelingChanged;
 	}
 
-	private static void simplifyInner(Automaton automaton, BitSet inhabitationFlags, int callId) {
-		boolean loopAgain = true;
-		while (loopAgain) {
-			loopAgain = false;
-			log("Start pass in simplify #"+callId+": " + automaton + ", " + inhabitationFlags);
-			for(int i=0;i!=automaton.size();++i) {
-				loopAgain |= simplify(i,automaton, inhabitationFlags);
-			}
-			log("End pass in simplify #"+callId+":   " + automaton + ", " + inhabitationFlags);
-		}
-	}
-
+	// FIXME: This method is not called from anywhere.
 	private static boolean simplifyContractives(Automaton automaton) {
 		BitSet contractives = new BitSet(automaton.size());
 		// initially all nodes are considered contractive.
@@ -354,7 +462,19 @@ public final class TypeAlgorithms {
 		return changed;
 	}
 
-	private static boolean simplify(int index, Automaton automaton, BitSet inhabitationFlags) {
+	/**
+	 * Attempts to simplify a single state in automaton.
+	 *
+	 * @param index
+	 *            --- the index of the state being worked on.
+	 * @param automaton
+	 *            --- automaton being simplified.
+	 * @param inhabitationFlags
+	 *            --- flags tracking inhabitation for some of the states
+	 * @return True if this method modified the state, false if the state is
+	 *         still the same.
+	 */
+	private static boolean simplifyState(int index, Automaton automaton, BitSet inhabitationFlags) {
 		Automaton.State state = automaton.states[index];
 		switch (state.kind) {
 		case Type.K_VOID:
@@ -374,8 +494,10 @@ public final class TypeAlgorithms {
 		case Type.K_UNION :
 			return simplifyUnion(index, state, automaton, inhabitationFlags);
 		case Type.K_REFERENCE: {
+			// A reference inherits the inhabitation of its child.
 			Inhabitation childInhabitation = getStateInhabitation(state.children[0], automaton, inhabitationFlags);
 			if (childInhabitation == Inhabitation.ALL || childInhabitation == Inhabitation.SOME) {
+				// TODO: Try to remember why we set a reference's inhabitation to SOME when its child's is ALL.
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 			} else if (childInhabitation == Inhabitation.NONE) {
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
@@ -391,10 +513,10 @@ public final class TypeAlgorithms {
 			boolean nonEmpty = (Boolean) state.data;
 			if(!nonEmpty) {
 				// type of form [T], so no further simplication needed
-				// Inhabited by the empty list and set
+				// All non-empty lists and sets contain the empty list or set
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 			}
-			// type of form [T+] so fall through to simplify like other compounds.
+			// list/set type of form [T+] so fall through to simplify like other compounds.
 		case Type.K_RECORD:
 		case Type.K_TUPLE:
 		case Type.K_METHOD:
@@ -453,6 +575,7 @@ public final class TypeAlgorithms {
 			if (childInhabitation == Inhabitation.NONE) {
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
 			} else if (childInhabitation == Inhabitation.UNLABELED) {
+				// If a child is labeled then we do not know if all the children are inhabited
 				allChildrenInhabited = false;
 			} // else ALL or SOME: leave allChildrenInhabited as it is
 		}
@@ -513,6 +636,8 @@ public final class TypeAlgorithms {
 
 		boolean changed = false;
 
+		// Scan over all children, flattening nested unions, removing uninhabited
+		// children, checking if all children are inhabited, etc.
 		boolean anyChildrenInhabited = false;
 		for (int i = 0; i < children.length; ++i) {
 			int iChild = children[i];
@@ -542,9 +667,12 @@ public final class TypeAlgorithms {
 					case SOME:
 						log("    Simplifying union child with some inhabitants: setting flag");
 						anyChildrenInhabited = true;
+					// Unlabeled children are ignored
 				}
 			}
 		}
+
+		// Perform more simplifications now that all children have been examined
 		if (children.length == 0) {
 			// this can happen in the case of a union which has only itself as a
 			// child.
@@ -679,55 +807,14 @@ public final class TypeAlgorithms {
 	public static Type intersect(Type t1, Type t2) {
 		Automaton a1 = Type.destruct(t1);
 		Automaton a2 = Type.destruct(t2);
-		log("----- TypeAlgorithms.intersect called -----\n  "+t1+" ("+a1+"),\n  "+t2+" ("+a2+")");
-		Automaton a = intersect(true,a1,true,a2);
-		log("----- TypeAlgorithms.intersect finished -----");
-		log("  result: "+Type.construct(a,false)+" ("+a+")");
-		simplify(a);
-		log("  simplified:    "+Type.construct(a,false)+" ("+a+")");
-		a = Automata.extract(a, 0);
-		log("  extracted:     "+Type.construct(a,false)+" ("+a+")");
-		// TODO: minimise in place to avoid allocating data unless necessary
-		a = Automata.minimise(a);
-		log("  minimised:     "+Type.construct(a,false)+" ("+a+")");
-		Automata.canonicalise(a, TypeAlgorithms.DATA_COMPARATOR);
-		log("  canonicalised: "+Type.construct(a,false)+" ("+a+")");
-		Type t = Type.construct(a, true);
-		log("  final type: "+t);
-		return t;
+		return Type.construct(intersect(true,a1,true,a2));
 	}
-
-	private static int callTraceCounter = 0;
 
 	private static Automaton intersect(boolean fromSign, Automaton from, boolean toSign, Automaton to) {
 		HashMap<IntersectionPoint,Integer> allocations = new HashMap();
 		ArrayList<Automaton.State> nstates = new ArrayList();
-		callTraceCounter = 0;
 		intersect(0,fromSign,from,0,toSign,to,allocations,nstates);
 		return new Automaton(nstates.toArray(new Automaton.State[nstates.size()]));
-	}
-
-	private static String stateToString(Automaton a, int index, boolean sign) {
-		Automaton.State state = a.states[index];
-		int kind = state.kind;
-		int invertedKind = invert(kind, sign);
-		StringBuilder sb = new StringBuilder();
-		sb.append('#');
-		sb.append(index);
-		sb.append('(');
-		if (sign) { sb.append('+'); } else { sb.append('-'); }
-		sb.append(kindToString(invertedKind));
-		sb.append(':');
-		sb.append(invertedKind);
-		sb.append(')');
-		if (kind != invertedKind) {
-			sb.append(" (inverted from ");
-			sb.append(kindToString(kind));
-			sb.append(':');
-			sb.append(kind);
-		}
-		sb.append(')');
-		return sb.toString();
 	}
 
 	private static int intersect(int fromIndex, boolean fromSign,
@@ -735,50 +822,26 @@ public final class TypeAlgorithms {
 			HashMap<IntersectionPoint, Integer> allocations,
 			ArrayList<Automaton.State> states) {
 
-		int callId = callTraceCounter++;
-		{
-			log("TypeAlgorithms.intersect #"+callId+" called");
-			log("  from: " + stateToString(from, fromIndex, fromSign));
-			log("  to: " + stateToString(to, toIndex, toSign));
-	  }
-
 		// first, check whether we have determined this state already
 		IntersectionPoint ip = new IntersectionPoint(fromIndex,fromSign,toIndex,toSign);
 		Integer allocation = allocations.get(ip);
-		if(allocation != null) {
-			log("    already allocated state " + allocation);
-			return allocation;
-		}
+		if(allocation != null) { return allocation;}
 
 		// looks like we haven't, so proceed to determine the new state.
 		int myIndex = states.size();
 		allocations.put(ip,myIndex);
-		log("    may allocate state " + myIndex);
 
 		Automaton.State fromState = from.states[fromIndex];
 		Automaton.State toState = to.states[toIndex];
 
 		// now, dispatch for the appropriate case.
-		int ret;
 		if(fromState.kind == toState.kind) {
-			log("    same kind");
-			ret = intersectSameKind(fromIndex, fromSign, from, toIndex,
+			return intersectSameKind(fromIndex, fromSign, from, toIndex,
 					toSign, to, allocations, states);
 		} else {
-			log("    different kind");
-			ret = intersectDifferentKind(fromIndex, fromSign, from, toIndex,
+			return intersectDifferentKind(fromIndex, fromSign, from, toIndex,
 					toSign, to, allocations, states);
 		}
-
-		{
-			log("TypeAlgorithms.intersect #"+callId+" returning");
-			log("  from: " + stateToString(from, fromIndex, fromSign));
-			log("  to: " + stateToString(to, toIndex, toSign));
-	  }
-		log("    states are: "+states);
-		log("    returning state: "+ret);
-		log("    allocations: "+allocations);
-		return ret;	
 	}
 
 	/**
@@ -1111,10 +1174,8 @@ public final class TypeAlgorithms {
 			HashMap<IntersectionPoint, Integer> allocations,
 			ArrayList<Automaton.State> states){
 		if (!fromSign && !toSign) {
-			log("    intersectUnionsNegNeg");
 			return intersectUnionsNegNeg(fromIndex, from, toIndex, to,allocations,states);
 		} else {
-			log("    intersectUnionsPosNeg");
 			return intersectUnionsPosNeg(fromIndex, fromSign, from, toIndex, toSign, to, allocations,states);
 		}
 	}
@@ -1133,7 +1194,6 @@ public final class TypeAlgorithms {
 		int[] newChildren = new int[fromChildren.length];
 		for (int i = 0; i != fromChildren.length; ++i) {
 			int fromChild = fromChildren[i];
-			log("    intersectUnionsPosNeg: intersecting children at " + i);
 			newChildren[i] = intersect(fromChild, fromSign, from, toIndex,
 					toSign, to, allocations, states);
 		}
@@ -1213,8 +1273,6 @@ public final class TypeAlgorithms {
 			myData = !fromNonEmpty | toNonEmpty;
 		}
 
-		log("    intersectSetsOrLists: fromNonEmpty: "+fromNonEmpty+", toNonEmpty: " + toNonEmpty + ", myData: " + myData);
-
 		return intersectCompounds(fromIndex,fromSign,from,toIndex,toSign,to,myData,allocations,states);
 	}
 
@@ -1229,20 +1287,16 @@ public final class TypeAlgorithms {
 			ArrayList<Automaton.State> states) {
 		if (fromSign == toSign) {
 			if (fromSign) {
-				log("    intersectCompoundsPosPos");
 				return intersectCompoundsPosPos(fromIndex, from, toIndex, to,
 						myData,allocations, states);
 			} else {
-				log("    intersectCompoundsNegNeg");
 				return intersectCompoundsNegNeg(fromIndex, from, toIndex, to,
 						allocations, states);
 			}
 		} else if (fromSign) {
-			log("    intersectCompoundsPosNeg");
 			return intersectCompoundsPosNeg(fromIndex, from, toIndex, to,
 					myData,allocations, states);
 		} else {
-			log("    intersectCompoundsPosNeg");
 			return intersectCompoundsPosNeg(toIndex, to, fromIndex, from,
 					myData,allocations, states);
 		}
@@ -1259,11 +1313,9 @@ public final class TypeAlgorithms {
 		Automaton.State fromState = from.states[fromIndex];
 		Automaton.State toState = to.states[toIndex];
 
-		log("    contiguousZipIntersection for children using same sign");
 		int[] myChildren = contiguousZipIntersection(fromState.children, from,
 				toState.children, to, allocations, states);
 
-		log("    combining children with same compound type: " + kindToString(fromState.kind));
 		Automaton.State myState = new Automaton.State(fromState.kind, myData,
 				true, myChildren);
 
@@ -1282,11 +1334,9 @@ public final class TypeAlgorithms {
 		Automaton.State fromState = from.states[fromIndex];
 		Automaton.State toState = to.states[toIndex];
 
-		log("    contiguousDistributeIntersection for children using +- signs");
 		int[] myChildren = contiguousDistributeIntersection(fromState, true, from,
 				toState, false, to, myData, allocations, states);
 
-		log("    combining children with union");
 		Automaton.State myState = new Automaton.State(Type.K_UNION, null,
 				false, myChildren);
 
@@ -1302,7 +1352,6 @@ public final class TypeAlgorithms {
 		int myIndex = states.size();
 		states.add(null); // reserve space for me
 
-		log("    negation of union of compounds");
 		// e.g. ![int] & ![real] => !([int]|[real])
 		int fromChild = states.size();
 		Automata.extractOnto(fromIndex,from,states);
@@ -1930,7 +1979,6 @@ public final class TypeAlgorithms {
 		for(int i=0;i!=fromChildrenLength;++i) {
 			int[] myChildChildren = new int[fromChildren.length];
 			System.arraycopy(tmpChildren, 0, myChildChildren, 0, fromChildrenLength);
-			log("    contiguousDistributeIntersection: intersecting children at " + i);
 			myChildChildren[i] = intersect(fromChildren[i], fromSign, from, toChildren[i],
 					toSign, to, allocations, states);
 			myChildren[i] = states.size();

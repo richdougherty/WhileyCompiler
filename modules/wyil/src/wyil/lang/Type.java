@@ -535,8 +535,7 @@ public abstract class Type {
 	 * @return
 	 */
 	public static Type intersect(Type t1, Type t2) {
-		Type t = TypeAlgorithms.intersect(t1,t2);
-		return t;
+		return TypeAlgorithms.intersect(t1,t2);
 	}
 
 	public static Reference effectiveReference(Type t) {
@@ -1296,14 +1295,8 @@ public abstract class Type {
 			break;
 		}
 		case K_LIST: {
-			boolean nonEmpty = (Boolean) state.data;
-			if (nonEmpty) {
-				middle = toString(state.children[0], visited, headers,
-								automaton) + "[]+";
-			} else {
-				middle = toString(state.children[0], visited, headers,
-								automaton) + "[]";
-			}
+			middle = toString(state.children[0], visited, headers, automaton)
+					+ "[]";
 			break;
 		}
 		case K_NOMINAL:
@@ -1326,14 +1319,12 @@ public abstract class Type {
 		case K_UNION: {
 			int[] children = state.children;
 			middle = "";
-			if (children.length > 1) { middle += "("; }
 			for (int i = 0; i != children.length; ++i) {
 				if(i != 0 || children.length == 1) {
 					middle += "|";
 				}
 				middle += toBracesString(children[i], visited, headers, automaton);
 			}
-			if (children.length > 1) { middle += ")"; }
 			break;
 		}
 		case K_TUPLE: {
