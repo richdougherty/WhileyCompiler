@@ -1719,7 +1719,17 @@ public abstract class Type {
 	private static Automaton normalise(Automaton automaton) {
 		//normalisedCount++;
 		//unminimisedCount += automaton.size();
+		System.err.println("Simplify (0): " + automaton);
+
 		TypeAlgorithms.simplify(automaton);
+		System.err.println("Simplify (1): " + automaton);
+		Automaton copy = new Automaton(automaton);
+		TypeAlgorithms.simplify(automaton);
+		System.err.println("Simplify (2): " + automaton);
+		if (!copy.equals(automaton)) {
+			throw new RuntimeException("Not equal!: (1) " + copy + " != (2) " + automaton);
+		}
+
 		// TODO: extract in place to avoid allocating data unless necessary
 		automaton = Automata.extract(automaton, 0);
 		// TODO: minimise in place to avoid allocating data unless necessary

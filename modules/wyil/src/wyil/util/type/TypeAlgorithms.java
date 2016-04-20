@@ -70,7 +70,7 @@ import wyil.lang.Type;
 public final class TypeAlgorithms {
 
 	private static void log(String message) {
-		//System.err.println(message);
+		System.err.println(message);
 	}
 
 	/**
@@ -337,8 +337,14 @@ public final class TypeAlgorithms {
 	 */
 	private static boolean setStateInhabitation(int index, Automaton automaton, BitSet inhabitationFlags, Inhabitation newValue) {
 		Inhabitation existingValue = getStateInhabitation(index, automaton, inhabitationFlags);
+		// if (newValue == Inhabitation.UNLABELED) {
+		// 	System.err.println("Marking state #"+index + " as UNLABELED (existing = " + existingValue + ")");
+		// }
 		if (newValue == existingValue) {
 			return false;
+		}
+		if (automaton.size() == 20 && newValue == Inhabitation.SOME) {
+			(new RuntimeException("Setting state #"+index+" to SOME!")).printStackTrace();
 		}
 		if (newValue == Inhabitation.NONE) {
 			automaton.states[index] = new Automaton.State(Type.K_VOID);
@@ -356,6 +362,9 @@ public final class TypeAlgorithms {
 			case Type.K_TUPLE:
 			case Type.K_FUNCTION:
 			case Type.K_METHOD:
+				if (newValue == Inhabitation.UNLABELED) {
+					System.err.println("Setting bit #"+index + " to " + (newValue == Inhabitation.SOME));
+				}
 				inhabitationFlags.set(index, newValue == Inhabitation.SOME);
 				break;
 			default:
@@ -378,6 +387,8 @@ public final class TypeAlgorithms {
 		// FIXME XXXXXXX remove this
 		int callId = simplifyCallCounter++;
 
+		// boolean log = (automaton.size() == 20);
+
 		// Use a BitSet to track the inhabitation label of some of the states in
 		// the automaton. A bit is available for each state but it is ignored for
 		// states whose kind has an implicit inhabitation label, e.g. K_VOID has
@@ -390,17 +401,42 @@ public final class TypeAlgorithms {
 		// have implicit inhabitation information.
 		BitSet inhabitationFlags = new BitSet(automaton.size());
 
+		logInhabitation("Start:   ", automaton, inhabitationFlags);
+
 		// Perform an initial simplification on the automaton.
 		simplifyInner(automaton, inhabitationFlags, callId);
+
+		logInhabitation("Inner #1:", automaton, inhabitationFlags);
 
 		// Now that simplification has occurred once, all inhabited states should
 		// have a label. Anything unlabeled can be considered uninhabited.
 		boolean labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
 
+		logInhabitation("Labeled: ", automaton, inhabitationFlags);
+
 		// If the labeling has changed then attempt an additional simplification.
 		if (labelingChanged) {
 			simplifyInner(automaton, inhabitationFlags, callId);
+
+			logInhabitation("Inner #2:", automaton, inhabitationFlags);
+			// FIXME: REMOVE THIS !!!!!!!!
+			// labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
+			// if (labelingChanged) {
+			// 	throw new IllegalStateException("Labeling shouldn't change twice: " + automaton);
+			// }
 		}
+	}
+
+	private static void logInhabitation(String msg, Automaton automaton, BitSet inhabitationFlags) {
+			StringBuilder sb = new StringBuilder();
+			for(int i=0;i!=automaton.size();++i) {
+				if (i != 0) {
+					sb.append(", ");
+				}
+				sb.append("#" + i + ":");
+				sb.append(getStateInhabitation(i, automaton, inhabitationFlags));
+			}
+			System.err.println(msg + " Inhabitation: " + sb.toString());
 	}
 
 	/**
@@ -544,6 +580,9 @@ public final class TypeAlgorithms {
 
 		// Set inhabitation label based on child's label
 		Inhabitation childInhabitation = getStateInhabitation(state.children[0], automaton, inhabitationFlags);
+		if (automaton.size() == 20) {
+			System.err.println("Negation at #"+index+"'s child is #" + state.children[0] + " with inhabitation " + childInhabitation);
+		}
 		Inhabitation inhabitation;
 		if (childInhabitation == Inhabitation.ALL) {
 			inhabitation = Inhabitation.NONE;
@@ -568,10 +607,19 @@ public final class TypeAlgorithms {
 			numChildrenToCheck = (Integer) state.data;
 		}
 
+		boolean doLog = automaton.size() == 20 && (index == 2 || index == 6);
+
+		if (doLog) {
+			System.err.println("Scanning compound #"+index+" children");
+		}
+
 		boolean allChildrenInhabited = true;
 		for(int i=0;i<numChildrenToCheck;++i) {			
 			Automaton.State child = automaton.states[children[i]];
 			Inhabitation childInhabitation = getStateInhabitation(children[i], automaton, inhabitationFlags);
+			if (doLog) {
+				System.err.println("Scanning compound #"+index+" children: child at "+children[i]+" ("+child+") has "+childInhabitation);
+			}
 			if (childInhabitation == Inhabitation.NONE) {
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
 			} else if (childInhabitation == Inhabitation.UNLABELED) {
@@ -582,6 +630,9 @@ public final class TypeAlgorithms {
 
 		if (allChildrenInhabited) {
 			log("    All children of compound are inhabited: marking");
+			if (doLog) {
+				System.err.println("All of #"+index+" children are inhabited: setting self to inhabited");
+			}
 			return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 		}
 
@@ -641,6 +692,7 @@ public final class TypeAlgorithms {
 		boolean anyChildrenInhabited = false;
 		for (int i = 0; i < children.length; ++i) {
 			int iChild = children[i];
+			log("    Scanning union child #"+iChild+" (" + automaton.states[iChild] + ")");
 			if (iChild == index) {
 				// contractive case
 				log("    Simplifying union child self-reference: removing child");
@@ -684,6 +736,7 @@ public final class TypeAlgorithms {
 			log("    Simplifying union with one child: removing union");
 			int child = children[0];
 			automaton.states[index] = new Automaton.State(automaton.states[child]);
+			setStateInhabitation(index, automaton, inhabitationFlags, getStateInhabitation(child, automaton, inhabitationFlags));
 			changed = true;
 		} else if (anyChildrenInhabited) {
 			log("    Simplifying union with at least one inhabited child: marking inhabited");
@@ -808,6 +861,22 @@ public final class TypeAlgorithms {
 		Automaton a1 = Type.destruct(t1);
 		Automaton a2 = Type.destruct(t2);
 		return Type.construct(intersect(true,a1,true,a2));
+		// log("----- TypeAlgorithms.intersect called -----\n  "+t1+" ("+a1+"),\n  "+t2+" ("+a2+")");
+		// Automaton a = intersect(true,a1,true,a2);
+		// log("----- TypeAlgorithms.intersect finished -----");
+		// log("  result: "+Type.construct(a,false)+" ("+a+")");
+		// simplify(a);
+		// log("  simplified:    "+Type.construct(a,false)+" ("+a+")");
+		// a = Automata.extract(a, 0);
+		// log("  extracted:     "+Type.construct(a,false)+" ("+a+")");
+		// TODO: minimise in place to avoid allocating data unless necessary
+		// a = Automata.minimise(a);
+		// log("  minimised:     "+Type.construct(a,false)+" ("+a+")");
+		// Automata.canonicalise(a, TypeAlgorithms.DATA_COMPARATOR);
+		// log("  canonicalised: "+Type.construct(a,false)+" ("+a+")");
+		// Type t = Type.construct(a, true);
+		// log("  final type: "+t);
+		// return t;
 	}
 
 	private static Automaton intersect(boolean fromSign, Automaton from, boolean toSign, Automaton to) {
