@@ -69,8 +69,12 @@ import wyil.lang.Type;
  */
 public final class TypeAlgorithms {
 
+	private static boolean loggingEnabled = false;
+
 	private static void log(String message) {
-		System.err.println(message);
+		// if (loggingEnabled) {
+			System.err.println(message);
+		// }
 	}
 
 	/**
@@ -297,9 +301,9 @@ public final class TypeAlgorithms {
 		case Type.K_RECORD:
 		case Type.K_TUPLE:
 		case Type.K_METHOD:
-			if (state.kind == Type.K_LIST) {
-				log("      Raw flag value for list at index #" + index + " is " + inhabitationFlags.get(index) + " from " + inhabitationFlags);
-			}
+			// if (state.kind == Type.K_LIST) {
+			// 	log("      Raw flag value for list at index #" + index + " is " + inhabitationFlags.get(index) + " from " + inhabitationFlags);
+			// }
 			if (inhabitationFlags.get(index)) {
 				return Inhabitation.SOME;
 			} else {
@@ -343,8 +347,9 @@ public final class TypeAlgorithms {
 		if (newValue == existingValue) {
 			return false;
 		}
-		if (automaton.size() == 20 && newValue == Inhabitation.SOME) {
-			(new RuntimeException("Setting state #"+index+" to SOME!")).printStackTrace();
+		if (automaton.size() == 20) {
+			StackTraceElement[] elements = (new RuntimeException()).getStackTrace();
+			log("      Setting state #"+index+" to " + newValue + " at " + elements[1]);
 		}
 		if (newValue == Inhabitation.NONE) {
 			automaton.states[index] = new Automaton.State(Type.K_VOID);
@@ -363,7 +368,7 @@ public final class TypeAlgorithms {
 			case Type.K_FUNCTION:
 			case Type.K_METHOD:
 				if (newValue == Inhabitation.UNLABELED) {
-					System.err.println("Setting bit #"+index + " to " + (newValue == Inhabitation.SOME));
+					log("Setting bit #"+index + " to " + (newValue == Inhabitation.SOME));
 				}
 				inhabitationFlags.set(index, newValue == Inhabitation.SOME);
 				break;
@@ -384,6 +389,10 @@ public final class TypeAlgorithms {
 	 *            --- automaton to simplify.
 	 */
 	public static void simplify(Automaton automaton) {
+		System.err.println("Simplifying: "+automaton);
+		if (automaton.size() == 20) {
+			loggingEnabled = true;
+		}
 		// FIXME XXXXXXX remove this
 		int callId = simplifyCallCounter++;
 
@@ -403,28 +412,46 @@ public final class TypeAlgorithms {
 
 		logInhabitation("Start:   ", automaton, inhabitationFlags);
 
-		// Perform an initial simplification on the automaton.
-		simplifyInner(automaton, inhabitationFlags, callId);
+		boolean loopAgain = true;
+		while (loopAgain) {
+			// System.err.println("Loop");
+			loopAgain = false;
 
-		logInhabitation("Inner #1:", automaton, inhabitationFlags);
+			// Don't assume any prior knowledge about inhabitation. Previous simplifications
+			// may have assumed states had SOME inhabitants but these could be NONE after
+			// further simplification, i.e. because !!SOME => SOME using our rules, but this
+			// is only because we're imprecise in propagating inhabitation through negation.
+			inhabitationFlags.clear();
 
-		// Now that simplification has occurred once, all inhabited states should
-		// have a label. Anything unlabeled can be considered uninhabited.
-		boolean labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
+			// Perform an initial simplification on the automaton.
+			boolean simplificationPeformed = simplifyInner(automaton, inhabitationFlags, callId);
 
-		logInhabitation("Labeled: ", automaton, inhabitationFlags);
+			// Now that simplification has occurred once, all possibly inhabited states should
+			// have a label. Anything unlabeled can be considered uninhabited.
+			boolean labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
 
-		// If the labeling has changed then attempt an additional simplification.
-		if (labelingChanged) {
-			simplifyInner(automaton, inhabitationFlags, callId);
+			logInhabitation("Loop:   ", automaton, inhabitationFlags);
 
-			logInhabitation("Inner #2:", automaton, inhabitationFlags);
-			// FIXME: REMOVE THIS !!!!!!!!
-			// labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
-			// if (labelingChanged) {
-			// 	throw new IllegalStateException("Labeling shouldn't change twice: " + automaton);
-			// }
+			loopAgain = simplificationPeformed | labelingChanged;
 		}
+
+		// logInhabitation("Inner #1:", automaton, inhabitationFlags);
+
+
+		// logInhabitation("Labeled: ", automaton, inhabitationFlags);
+
+		// // If the labeling has changed then attempt an additional simplification.
+		// if (labelingChanged) {
+		// 	boolean simplified = simplifyInner(automaton, inhabitationFlags, callId);
+
+		// 	logInhabitation("Inner #2:", automaton, inhabitationFlags);
+		// 	// FIXME: REMOVE THIS !!!!!!!!
+		// 	// labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
+		// 	// if (labelingChanged) {
+		// 	// 	throw new IllegalStateException("Labeling shouldn't change twice: " + automaton);
+		// 	// }
+		// }
+		loggingEnabled = false;
 	}
 
 	private static void logInhabitation(String msg, Automaton automaton, BitSet inhabitationFlags) {
@@ -436,7 +463,7 @@ public final class TypeAlgorithms {
 				sb.append("#" + i + ":");
 				sb.append(getStateInhabitation(i, automaton, inhabitationFlags));
 			}
-			System.err.println(msg + " Inhabitation: " + sb.toString());
+			log(msg + " Inhabitation: " + sb.toString());
 	}
 
 	/**
@@ -447,16 +474,23 @@ public final class TypeAlgorithms {
 	 * @param inhabitationFlags
 	 *            --- flags tracking inhabitation for some of the states
 	 */
-	private static void simplifyInner(Automaton automaton, BitSet inhabitationFlags, int callId) {
+	private static boolean simplifyInner(Automaton automaton, BitSet inhabitationFlags, int callId) {
+		boolean anySimplificationPerformed = false;
 		boolean loopAgain = true;
 		while (loopAgain) {
 			loopAgain = false;
-			log("Start pass in simplify #"+callId+": " + automaton + ", " + inhabitationFlags);
+			// log("Start pass in simplify #"+callId+": " + automaton + ", " + inhabitationFlags);
 			for(int i=0;i!=automaton.size();++i) {
-				loopAgain |= simplifyState(i,automaton, inhabitationFlags);
+				boolean stateSimplified = simplifyState(i,automaton, inhabitationFlags);
+				if (stateSimplified) {
+					System.err.println("Simplified state #"+i);
+				}
+				loopAgain |= stateSimplified;
+				anySimplificationPerformed |= stateSimplified;
 			}
-			log("End pass in simplify #"+callId+":   " + automaton + ", " + inhabitationFlags);
+			// log("End pass in simplify #"+callId+":   " + automaton + ", " + inhabitationFlags);
 		}
+		return anySimplificationPerformed;
 	}
 
 	/**
@@ -532,9 +566,13 @@ public final class TypeAlgorithms {
 		case Type.K_REFERENCE: {
 			// A reference inherits the inhabitation of its child.
 			Inhabitation childInhabitation = getStateInhabitation(state.children[0], automaton, inhabitationFlags);
+			log("    Reference child inhabitation: " + childInhabitation);
 			if (childInhabitation == Inhabitation.ALL || childInhabitation == Inhabitation.SOME) {
 				// TODO: Try to remember why we set a reference's inhabitation to SOME when its child's is ALL.
-				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
+				boolean inhChanged = setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
+				log("      Existing inhabitation: " + getStateInhabitation(index, automaton, inhabitationFlags));
+				log("      Setting inhabitation to SOME. Changed? " + inhChanged);
+				return inhChanged;
 			} else if (childInhabitation == Inhabitation.NONE) {
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
 			} else {
@@ -580,9 +618,7 @@ public final class TypeAlgorithms {
 
 		// Set inhabitation label based on child's label
 		Inhabitation childInhabitation = getStateInhabitation(state.children[0], automaton, inhabitationFlags);
-		if (automaton.size() == 20) {
-			System.err.println("Negation at #"+index+"'s child is #" + state.children[0] + " with inhabitation " + childInhabitation);
-		}
+		log("    Negation at #"+index+"'s child is #" + state.children[0] + " with inhabitation " + childInhabitation);
 		Inhabitation inhabitation;
 		if (childInhabitation == Inhabitation.ALL) {
 			inhabitation = Inhabitation.NONE;
@@ -607,19 +643,13 @@ public final class TypeAlgorithms {
 			numChildrenToCheck = (Integer) state.data;
 		}
 
-		boolean doLog = automaton.size() == 20 && (index == 2 || index == 6);
-
-		if (doLog) {
-			System.err.println("Scanning compound #"+index+" children");
-		}
+		log("    Scanning compound #"+index+" children");
 
 		boolean allChildrenInhabited = true;
 		for(int i=0;i<numChildrenToCheck;++i) {			
 			Automaton.State child = automaton.states[children[i]];
 			Inhabitation childInhabitation = getStateInhabitation(children[i], automaton, inhabitationFlags);
-			if (doLog) {
-				System.err.println("Scanning compound #"+index+" children: child at "+children[i]+" ("+child+") has "+childInhabitation);
-			}
+			log("    Scanning compound #"+index+" children: child at "+children[i]+" ("+child+") inhabitation: "+childInhabitation);
 			if (childInhabitation == Inhabitation.NONE) {
 				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
 			} else if (childInhabitation == Inhabitation.UNLABELED) {
@@ -630,9 +660,7 @@ public final class TypeAlgorithms {
 
 		if (allChildrenInhabited) {
 			log("    All children of compound are inhabited: marking");
-			if (doLog) {
-				System.err.println("All of #"+index+" children are inhabited: setting self to inhabited");
-			}
+			log("    All of #"+index+" children are inhabited: setting self to inhabited");
 			return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 		}
 
@@ -774,6 +802,7 @@ public final class TypeAlgorithms {
 				int jChild = children[j];
 				if (i != j && isSubtype(jChild, iChild, automaton)
 						&& (!isSubtype(iChild, jChild, automaton) || i > j)) {
+					log("    Union child #" + iChild + " subtype of #" + jChild);
 					subsumed = true;
 				}
 			}
