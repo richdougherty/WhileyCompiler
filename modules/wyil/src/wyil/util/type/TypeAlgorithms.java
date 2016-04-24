@@ -72,9 +72,9 @@ public final class TypeAlgorithms {
 	private static boolean loggingEnabled = false;
 
 	private static void log(String message) {
-		// if (loggingEnabled) {
-			System.err.println(message);
-		// }
+		if (loggingEnabled) {
+			// System.err.println(message);
+		}
 	}
 
 	/**
@@ -389,7 +389,8 @@ public final class TypeAlgorithms {
 	 *            --- automaton to simplify.
 	 */
 	public static void simplify(Automaton automaton) {
-		System.err.println("Simplifying: "+automaton);
+		try {
+		// System.err.println("Simplifying: "+automaton);
 		if (automaton.size() == 20) {
 			loggingEnabled = true;
 		}
@@ -408,14 +409,23 @@ public final class TypeAlgorithms {
 		// A clear bit indicates a state is UNLABELED, a set bit indicates it
 		// has SOME inhabitants. This bit has no meaning for states that already
 		// have implicit inhabitation information.
-		BitSet inhabitationFlags = new BitSet(automaton.size());
+		BitSet lastInhabitationFlags = null;
+		BitSet inhabitationFlags = null;
 
-		logInhabitation("Start:   ", automaton, inhabitationFlags);
+		logInhabitation("Start loop: ", automaton, inhabitationFlags);
 
-		boolean loopAgain = true;
-		while (loopAgain) {
-			// System.err.println("Loop");
-			loopAgain = false;
+		while (true) {
+			// Swap inhabitation flags.
+			{
+				BitSet temp = inhabitationFlags;
+				lastInhabitationFlags = inhabitationFlags;
+				lastInhabitationFlags = temp;
+				if (inhabitationFlags == null) {
+					inhabitationFlags = new BitSet(automaton.size());
+				} else {
+					inhabitationFlags.clear();
+				}
+			}
 
 			// Don't assume any prior knowledge about inhabitation. Previous simplifications
 			// may have assumed states had SOME inhabitants but these could be NONE after
@@ -424,15 +434,30 @@ public final class TypeAlgorithms {
 			inhabitationFlags.clear();
 
 			// Perform an initial simplification on the automaton.
-			boolean simplificationPeformed = simplifyInner(automaton, inhabitationFlags, callId);
+			boolean simplified = simplifyInner(automaton, inhabitationFlags, callId);
+			// Break if not simplified or inhabitaitonFlags non-null and equal
+			if (!simplified && lastInhabitationFlags != null && lastInhabitationFlags.equals(inhabitationFlags)) {
+				log("  No simplification and inhabitation flags unchanged: breaking out of simplification loop");
+				break;
+			}
+			log("  Found simplification and/or inhabitation flags changes: continuing with simplification loop");
+			logInhabitation("After simplification: ", automaton, inhabitationFlags);
 
 			// Now that simplification has occurred once, all possibly inhabited states should
 			// have a label. Anything unlabeled can be considered uninhabited.
 			boolean labelingChanged = markUnlabeledAsUninhabited(automaton, inhabitationFlags);
+			if (!labelingChanged && lastInhabitationFlags != null) {
+				log("  No uninhabited labeling changes: breaking out of simplification loop");
+				break;
+			}
+			log("  Found labeling changes: continuing with simplification loop");
 
-			logInhabitation("Loop:   ", automaton, inhabitationFlags);
+			logInhabitation("After labeling changes: ", automaton, inhabitationFlags);
+		}
 
-			loopAgain = simplificationPeformed | labelingChanged;
+		} catch (RuntimeException e) {
+			e.printStackTrace();
+			throw e;
 		}
 
 		// logInhabitation("Inner #1:", automaton, inhabitationFlags);
@@ -461,7 +486,11 @@ public final class TypeAlgorithms {
 					sb.append(", ");
 				}
 				sb.append("#" + i + ":");
-				sb.append(getStateInhabitation(i, automaton, inhabitationFlags));
+				if (inhabitationFlags == null) {
+					sb.append("UNLABELED");
+				} else {
+					sb.append(getStateInhabitation(i, automaton, inhabitationFlags));
+				}
 			}
 			log(msg + " Inhabitation: " + sb.toString());
 	}
@@ -482,9 +511,9 @@ public final class TypeAlgorithms {
 			// log("Start pass in simplify #"+callId+": " + automaton + ", " + inhabitationFlags);
 			for(int i=0;i!=automaton.size();++i) {
 				boolean stateSimplified = simplifyState(i,automaton, inhabitationFlags);
-				if (stateSimplified) {
-					System.err.println("Simplified state #"+i);
-				}
+				// if (stateSimplified) {
+				// 	System.err.println("Simplified state #"+i);
+				// }
 				loopAgain |= stateSimplified;
 				anySimplificationPerformed |= stateSimplified;
 			}
