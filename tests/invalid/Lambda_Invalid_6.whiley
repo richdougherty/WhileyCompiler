@@ -1,0 +1,1 @@
+type voidretfunc is function(int, int, int)->(int, void)

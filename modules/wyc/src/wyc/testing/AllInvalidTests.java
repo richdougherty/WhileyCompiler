@@ -188,6 +188,7 @@ public class AllInvalidTests {
 				"-wd", WHILEY_SRC_DIR,      // location of source directory
 				"-wp", WYRT_PATH,           // add wyrt to whileypath
 				"-verify",                  // enable verification
+				// "-verbose",                 // show debugging information
 				filename);                      // name of test to compile
 
 		int r = p.first();

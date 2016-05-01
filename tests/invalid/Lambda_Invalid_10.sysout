@@ -1,0 +1,3 @@
+../../tests/invalid/Lambda_Invalid_10.whiley:1: empty type encountered
+method f(int x) -> void:
+                  ^^^^^

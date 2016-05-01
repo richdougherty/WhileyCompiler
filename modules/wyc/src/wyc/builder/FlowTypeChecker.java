@@ -1614,6 +1614,9 @@ public class FlowTypeChecker {
 		
 		for (WhileyFile.Parameter p : expr.parameters) {
 			Nominal n = resolveAsType(p.type, context);
+			if (Type.isSubtype(Type.T_VOID, n.raw())) {
+				syntaxError("empty type encountered", filename, p);
+			}
 			rawParameterTypes.add(n.raw());
 			nomParameterTypes.add(n.nominal());
 			// Now, update the environment to include those declared variables
@@ -2810,23 +2813,14 @@ public class FlowTypeChecker {
 	}
 
 	public Nominal.FunctionOrMethod resolveAsType(SyntacticType.FunctionOrMethod t, Context context) {
-		// We need to sanity check the parameter types we have here, since
-		// occasionally we can end up with something other than a function type.
-		// This may seem surprising, but it can happen when one of the types
-		// involved is contractive (normally by accident).
-		for (SyntacticType param : t.paramTypes) {
-			Nominal nominal = resolveAsType(param, context);
-			if (Type.isSubtype(Type.T_VOID, nominal.raw())) {
-				syntaxError("empty type encountered", filename, param);
-			}
+		// Sanity check the function type, since it may have been reduced to the
+		// empty type. This may seem surprising, but it can happen when one of the
+		// return types is contractive (normally by accident).
+		Nominal nominal = resolveAsType((SyntacticType) t, context);
+		if (Type.isSubtype(Type.T_VOID, nominal.raw())) {
+			syntaxError("empty type encountered", filename, t);
 		}
-		for (SyntacticType ret : t.returnTypes) {
-			Nominal nominal = resolveAsType(ret, context);
-			if (Type.isSubtype(Type.T_VOID, nominal.raw())) {
-				syntaxError("empty type encountered", filename, ret);
-			}
-		}
-		return (Nominal.FunctionOrMethod) resolveAsType((SyntacticType) t, context);
+		return (Nominal.FunctionOrMethod) nominal;
 	}
 
 	/**
@@ -3630,7 +3624,11 @@ public class FlowTypeChecker {
 	private Environment addDeclaredParameters(List<WhileyFile.Parameter> parameters, Environment environment,
 			WhileyFile.Context d) {
 		for (WhileyFile.Parameter p : parameters) {
-			environment = environment.declare(p.name, resolveAsType(p.type, d), resolveAsType(p.type, d));
+			Nominal type = resolveAsType(p.type, d);
+			if (Type.isSubtype(Type.T_VOID, type.raw())) {
+				syntaxError("empty type encountered", filename, p);
+			}
+			environment = environment.declare(p.name, type, type);
 		}
 		return environment;
 	}
@@ -3639,6 +3637,9 @@ public class FlowTypeChecker {
 			WhileyFile.Context d) {
 		if (parameter != null) {
 			Nominal type = resolveAsType(parameter.type, d);
+			if (Type.isSubtype(Type.T_VOID, type.raw())) {
+				syntaxError("empty type encountered", filename, parameter);
+			}
 			return environment.declare(parameter.name, type, type);
 		} else {
 			return environment;
@@ -3867,6 +3868,7 @@ public class FlowTypeChecker {
 			if (declaredTypes.containsKey(variable)) {
 				throw new RuntimeException("Variable already declared - " + variable);
 			}
+
 			if (count == 1) {
 				declaredTypes.put(variable, declared);
 				currentTypes.put(variable, initial);

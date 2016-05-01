@@ -35,12 +35,6 @@ public abstract class SemanticType {
 	}
 	
 	public static Tuple Tuple(SemanticType... elements) {
-		for (SemanticType t : elements) {
-			if (t instanceof SemanticType.Void) {
-				throw new IllegalArgumentException(
-						"Tuple type cannot contain void element");
-			}
-		}
 		return new Tuple(elements);
 	}
 
@@ -48,10 +42,6 @@ public abstract class SemanticType {
 		SemanticType[] es = new SemanticType[elements.size()];
 		int i = 0;
 		for (SemanticType t : elements) {
-			if (t instanceof SemanticType.Void) {
-				throw new IllegalArgumentException(
-						"Tuple type cannot contain void element");
-			}
 			es[i++] = t;
 		}
 		return new Tuple(es);

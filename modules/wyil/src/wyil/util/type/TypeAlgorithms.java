@@ -510,7 +510,6 @@ public final class TypeAlgorithms {
 		case Type.K_RATIONAL:
 		case Type.K_STRING:
 		case Type.K_NOMINAL:
-		case Type.K_FUNCTION:
 			return false;
 		case Type.K_NEGATION:
 			return simplifyNegation(index, state, automaton, inhabitationFlags);
@@ -532,8 +531,10 @@ public final class TypeAlgorithms {
 			// list/set type of form [T+] so fall through to simplify like other compounds.
 		case Type.K_RECORD:
 		case Type.K_TUPLE:
-		case Type.K_METHOD:
 			return simplifyCompound(index, state, automaton, inhabitationFlags);
+		case Type.K_FUNCTION:
+		case Type.K_METHOD:
+			return simplifyFunctionOrMethod(index, state, automaton, inhabitationFlags);
 		default:
 			throw new IllegalArgumentException("Can't simplify state with kind: " + state.kind);
 		}
@@ -587,17 +588,9 @@ public final class TypeAlgorithms {
 		int kind = state.kind;
 		int[] children = state.children;
 
-		// Skip some children if the compound is a function
-		int numChildrenToCheck = children.length;
-		if (state.kind == Type.K_FUNCTION) {
-		  // Only check function parameters for now
-		  // TODO: Work out how to handle function return types properly
-			numChildrenToCheck = (Integer) state.data;
-		}
-
 		// Scan compound's children
 		boolean allChildrenInhabited = true;
-		for(int i=0;i<numChildrenToCheck;++i) {			
+		for(int i=0;i<children.length;++i) {			
 			Automaton.State child = automaton.states[children[i]];
 			Inhabitation childInhabitation = getStateInhabitation(children[i], automaton, inhabitationFlags);
 			if (childInhabitation == Inhabitation.NONE) {
@@ -614,6 +607,26 @@ public final class TypeAlgorithms {
 		}
 
 		return false;
+	}
+
+	private static boolean simplifyFunctionOrMethod(int index, Automaton.State state, Automaton automaton, BitSet inhabitationFlags) {
+		int kind = state.kind;
+		int[] children = state.children;
+
+		// Skip some children if the compound is a function
+	  Type.FunctionOrMethod.Data data = (Type.FunctionOrMethod.Data) state.data;
+		int firstReturnType = data.numParams;
+
+		// Scan compound's children
+		for(int i=firstReturnType;i<children.length;++i) {			
+			Automaton.State child = automaton.states[children[i]];
+			Inhabitation childInhabitation = getStateInhabitation(children[i], automaton, inhabitationFlags);
+			if (childInhabitation == Inhabitation.NONE) {
+				return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.NONE);
+			}
+		}
+
+		return setStateInhabitation(index, automaton, inhabitationFlags, Inhabitation.SOME);
 	}
 
 	/**

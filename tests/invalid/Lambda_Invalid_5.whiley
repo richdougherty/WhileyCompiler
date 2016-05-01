@@ -1,0 +1,1 @@
+type voidretmethod is method(int)->(void)
